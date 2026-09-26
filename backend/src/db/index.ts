@@ -2,12 +2,12 @@ import { Pool } from 'pg';
 import { PGlite } from '@electric-sql/pglite';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 
 let pool: Pool | null = null;
 let pgliteInstance: PGlite | null = null;
 let usePGlite = false;
 
-// Initialize Database connection
 export async function getDb() {
   if (pool || pgliteInstance) {
     return { query, isPGlite: usePGlite };
@@ -31,27 +31,37 @@ export async function getDb() {
         connectionTimeoutMillis: 5000,
       });
 
-      // Test connection
       const client = await pool.connect();
       client.release();
       console.log('Connected to PostgreSQL via pg.Pool');
       usePGlite = false;
       return { query, isPGlite: false };
     } catch (err) {
-      console.warn('PostgreSQL connection error, falling back to embedded PGlite instance:', (err as Error).message);
+      console.warn('PostgreSQL connection error, falling back to PGlite instance:', (err as Error).message);
     }
   }
 
-  // Fallback to embedded PGlite PostgreSQL engine
+  // Fallback to embedded PGlite PostgreSQL engine (Vercel Serverless / Read-Only safe)
   try {
+    const isVercel = !!process.env.VERCEL || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
     const isTest = process.env.NODE_ENV === 'test' || process.env.VITEST === 'true';
-    const dbDir = isTest ? 'memory://' : path.join(__dirname, '../../pglite_data');
-    if (!isTest && !fs.existsSync(dbDir)) {
-      fs.mkdirSync(dbDir, { recursive: true });
+
+    let dbDir = 'memory://';
+    if (!isTest && !isVercel) {
+      dbDir = path.join(__dirname, '../../pglite_data');
+      if (!fs.existsSync(dbDir)) {
+        try { fs.mkdirSync(dbDir, { recursive: true }); } catch (e) { dbDir = 'memory://'; }
+      }
+    } else if (isVercel) {
+      dbDir = path.join(os.tmpdir(), 'pglite_data');
+      if (!fs.existsSync(dbDir)) {
+        try { fs.mkdirSync(dbDir, { recursive: true }); } catch (e) { dbDir = 'memory://'; }
+      }
     }
+
     pgliteInstance = new PGlite(dbDir);
     await pgliteInstance.waitReady;
-    console.log('Initialized embedded PGlite PostgreSQL database instance');
+    console.log(`Initialized PGlite PostgreSQL database instance (${dbDir})`);
     usePGlite = true;
 
     // Run schema setup if needed
@@ -63,7 +73,7 @@ export async function getDb() {
 
     return { query, isPGlite: true };
   } catch (err) {
-    console.error('Failed to initialize embedded PGlite instance:', err);
+    console.error('Failed to initialize PGlite instance:', err);
     throw err;
   }
 }
@@ -72,8 +82,6 @@ export async function query<T = any>(text: string, params: any[] = []): Promise<
   await getDb();
 
   if (usePGlite && pgliteInstance) {
-    // PGlite query execution
-    // Convert $1, $2 params if needed or pass directly
     const res = await pgliteInstance.query<T>(text, params);
     return {
       rows: res.rows,

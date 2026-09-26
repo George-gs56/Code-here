@@ -28,6 +28,17 @@ exports.app.use((0, helmet_1.default)({ contentSecurityPolicy: false }));
 exports.app.use((0, cors_1.default)({ origin: true, credentials: true }));
 exports.app.use(express_1.default.json({ limit: '10mb' }));
 exports.app.use((0, morgan_1.default)('dev'));
+// Ensure DB connection is initialized on serverless requests
+exports.app.use(async (req, res, next) => {
+    try {
+        await (0, db_1.getDb)();
+        next();
+    }
+    catch (err) {
+        console.error('DB Initialization Middleware Error:', err);
+        res.status(500).json({ error: 'Database connection failed' });
+    }
+});
 // API Routes
 exports.app.use('/api/auth', auth_routes_1.default);
 exports.app.use('/api/languages', languages_routes_1.default);
@@ -60,3 +71,4 @@ if (require.main === module) {
         console.error('Failed to start CodeSphere backend:', err);
     });
 }
+exports.default = exports.app;

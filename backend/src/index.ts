@@ -27,6 +27,17 @@ app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(morgan('dev'));
 
+// Ensure DB connection is initialized on serverless requests
+app.use(async (req, res, next) => {
+  try {
+    await getDb();
+    next();
+  } catch (err) {
+    console.error('DB Initialization Middleware Error:', err);
+    res.status(500).json({ error: 'Database connection failed' });
+  }
+});
+
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/languages', languagesRoutes);
@@ -62,3 +73,5 @@ if (require.main === module) {
       console.error('Failed to start CodeSphere backend:', err);
     });
 }
+
+export default app;
