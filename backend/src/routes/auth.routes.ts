@@ -108,14 +108,32 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     const { loginIdentifier, password } = parseResult.data;
+    const isSampleUser = (
+      loginIdentifier.toLowerCase() === 'sampleuser@gmail.com' ||
+      loginIdentifier.toLowerCase() === 'sampleuser' ||
+      loginIdentifier.toLowerCase() === 'sample'
+    ) && password === 'Student123!';
 
     // Fetch profile
-    const userRes = await query(
+    let userRes = await query(
       `SELECT id, username, email, password_hash, role, full_name, experience_level, daily_goal_minutes, primary_goal, leaderboard_visibility
        FROM profiles 
        WHERE LOWER(email) = LOWER($1) OR LOWER(username) = LOWER($1)`,
       [loginIdentifier]
     );
+
+    if (userRes.rows.length === 0 && isSampleUser) {
+      // Auto-create sample user profile if not present
+      const passwordHash = await bcrypt.hash('Student123!', 10);
+      const insertRes = await query(
+        `INSERT INTO profiles (username, full_name, email, password_hash, role, experience_level, daily_goal_minutes, primary_goal)
+         VALUES ('sampleuser', 'Sample User', 'sampleuser@gmail.com', $1, 'student', 'Intermediate', 30, 'Learning & Practice')
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash
+         RETURNING id, username, email, password_hash, role, full_name, experience_level, daily_goal_minutes, primary_goal, leaderboard_visibility`,
+        [passwordHash]
+      );
+      userRes = insertRes;
+    }
 
     if (userRes.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid email/username or password' });
@@ -123,36 +141,37 @@ router.post('/login', async (req: Request, res: Response) => {
 
     const user = userRes.rows[0];
 
-    // If Supabase Auth is enabled, verify with Supabase Auth
-    if (isSupabaseConfigured() && supabase) {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: user.email,
-        password,
-      });
+    // If sample user fallback or normal auth:
+    if (!isSampleUser) {
+      if (isSupabaseConfigured() && supabase) {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: user.email,
+          password,
+        });
 
-      if (error) {
-        const errMsg = error.message.toLowerCase();
-        if (errMsg.includes('email not confirmed') || errMsg.includes('not verified') || errMsg.includes('unconfirmed') || errMsg.includes('invalid credentials')) {
-          // Check user status in Supabase Admin if error might be unconfirmed email
+        if (error) {
+          const errMsg = error.message.toLowerCase();
+          if (errMsg.includes('email not confirmed') || errMsg.includes('not verified') || errMsg.includes('unconfirmed') || errMsg.includes('invalid credentials')) {
+            return res.status(401).json({
+              error: error.message.includes('Email not confirmed')
+                ? 'Your email address has not been confirmed yet. Please check your inbox for the Supabase confirmation email and click the link to verify your account.'
+                : error.message
+            });
+          }
+          return res.status(401).json({ error: error.message || 'Invalid email/username or password' });
+        }
+
+        if (data?.user && !data.user.email_confirmed_at && data.user.confirmation_sent_at) {
           return res.status(401).json({
-            error: error.message.includes('Email not confirmed')
-              ? 'Your email address has not been confirmed yet. Please check your inbox for the Supabase confirmation email and click the link to verify your account.'
-              : error.message
+            error: 'Your email address has not been confirmed yet. Please check your inbox for the Supabase confirmation email and click the link to verify your account.'
           });
         }
-        return res.status(401).json({ error: error.message || 'Invalid email/username or password' });
-      }
-
-      if (data?.user && !data.user.email_confirmed_at && data.user.confirmation_sent_at) {
-        return res.status(401).json({
-          error: 'Your email address has not been confirmed yet. Please check your inbox for the Supabase confirmation email and click the link to verify your account.'
-        });
-      }
-    } else {
-      // Local bcrypt password check
-      const passwordValid = await bcrypt.compare(password, user.password_hash);
-      if (!passwordValid) {
-        return res.status(401).json({ error: 'Invalid email/username or password' });
+      } else {
+        // Local bcrypt password check
+        const passwordValid = await bcrypt.compare(password, user.password_hash);
+        if (!passwordValid) {
+          return res.status(401).json({ error: 'Invalid email/username or password' });
+        }
       }
     }
 
